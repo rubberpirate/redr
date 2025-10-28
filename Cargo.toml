@@ -1,0 +1,5 @@
+[workspace]
+members = [
+    "edr/agent",
+    "edr/server",
+]

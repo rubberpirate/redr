@@ -1,0 +1,17 @@
+[package]
+name = "edr-agent"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.11", features = ["json", "rustls-tls"] }
+# Using direct /proc parsing instead of sysinfo to keep dependencies minimal for the prototype
+notify = "6"
+sha2 = "0.10"
+hex = "0.4"
+anyhow = "1"
+chrono = { version = "0.4", features = ["alloc"] }
+hostname = "0.4"

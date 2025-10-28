@@ -1,0 +1,84 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>EDR Dashboard</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 16px; }
+    #events { max-height: 60vh; overflow: auto; border: 1px solid #ddd; padding: 8px; }
+    .event { border-bottom: 1px solid #eee; padding: 6px; }
+    .meta { font-size: 12px; color: #666; }
+    .controls { margin-top: 12px; }
+    .small { font-size: 13px; }
+  </style>
+</head>
+<body>
+  <h1>EDR Dashboard</h1>
+  <div>
+    <label>Filter host: <input id="filter" placeholder="host (optional)"/></label>
+  </div>
+  <h2>Live events</h2>
+  <div id="events"></div>
+
+  <h2>Send command to host</h2>
+  <div class="controls">
+    <div>
+      <label>Target host: <input id="target" /></label>
+    </div>
+    <div>
+      <label>Action:
+        <select id="action">
+          <option value="kill">kill (pid)</option>
+          <option value="quarantine">quarantine (path)</option>
+          <option value="block_ip">block_ip (ip)</option>
+        </select>
+      </label>
+    </div>
+    <div>
+      <label>Args (JSON): <input id="args" placeholder='{"pid":123}' style="width:60%"/></label>
+    </div>
+    <div>
+      <button id="send">Send command</button>
+    </div>
+    <div id="cmdstatus" class="small"></div>
+  </div>
+
+  <script>
+    const eventsDiv = document.getElementById('events');
+    const filterInput = document.getElementById('filter');
+
+    function addEvent(ev) {
+      const d = document.createElement('div'); d.className = 'event';
+      const meta = document.createElement('div'); meta.className = 'meta';
+      meta.textContent = `${ev.event_type} — ${ev.host}`;
+      const pre = document.createElement('pre'); pre.textContent = JSON.stringify(ev.data, null, 2);
+      d.appendChild(meta); d.appendChild(pre);
+      eventsDiv.insertBefore(d, eventsDiv.firstChild);
+    }
+
+    // websocket
+    const scheme = (location.protocol === 'https:') ? 'wss' : 'ws';
+    const ws = new WebSocket(`${scheme}://${location.host}/ws`);
+    ws.onmessage = (m) => {
+      try {
+        const ev = JSON.parse(m.data);
+        const filter = filterInput.value.trim();
+        if (!filter || ev.host.includes(filter)) addEvent(ev);
+      } catch (e) { console.error(e); }
+    };
+
+    // command send
+    document.getElementById('send').addEventListener('click', async () => {
+      const target = document.getElementById('target').value.trim();
+      const action = document.getElementById('action').value;
+      let args = {};
+      try { args = JSON.parse(document.getElementById('args').value || '{}'); } catch(e) { document.getElementById('cmdstatus').textContent = 'Invalid JSON args'; return; }
+      if (!target) { document.getElementById('cmdstatus').textContent = 'target is required'; return; }
+      const id = `${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
+      const cmd = { id, target, action, args };
+      const res = await fetch('/command', { method: 'POST', headers: {'content-type':'application/json'}, body: JSON.stringify(cmd) });
+      if (res.ok) { document.getElementById('cmdstatus').textContent = 'Command queued'; } else { document.getElementById('cmdstatus').textContent = 'Failed to queue'; }
+    });
+  </script>
+</body>
+</html>
