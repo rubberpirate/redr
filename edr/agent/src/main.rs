@@ -3,7 +3,7 @@ use notify::{Config, Event, EventKind, RecursiveMode};
 use reqwest::Client;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::path::Path;
@@ -11,7 +11,7 @@ use std::process::Command;
 use std::sync::Arc;
 use std::path::PathBuf;
 use notify::Watcher;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use tokio::time::{sleep, Duration};
 use chrono::Utc;
 use hostname;
@@ -76,6 +76,19 @@ fn block_ip(ip: &str) -> Result<()> {
     Ok(())
 }
 
+fn block_port(port: u16) -> Result<()> {
+    let rule = format!("add rule inet filter input tcp dport {} drop", port);
+    let _ = Command::new("nft").arg("-f").arg("-").stdin(std::process::Stdio::piped()).spawn().and_then(|mut child| {
+        use std::io::Write;
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin.write_all(rule.as_bytes())?;
+        }
+        child.wait()?;
+        Ok(())
+    });
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Config from environment
@@ -86,14 +99,27 @@ async fn main() -> Result<()> {
     let client = Client::builder().danger_accept_invalid_certs(true).build()?;
     let host = hostname::get()?.to_string_lossy().into_owned();
 
+    // Policy store (fetched from server)
+    let policy: Arc<RwLock<serde_json::Value>> = Arc::new(RwLock::new(serde_json::json!({
+        "whitelist_commands": [],
+        "whitelist_paths": [],
+        "blacklist_hashes": []
+    })));
+    let held_pids: Arc<Mutex<HashSet<i32>>> = Arc::new(Mutex::new(HashSet::new()));
+
     // Spawn process monitor: read /proc directly for a simple, portable snapshot
     let client_p = client.clone();
     let server_p = server.clone();
     let token_p = token.clone();
     let host_p = host.clone();
+    let policy_p = policy.clone();
+    let held_pids_p = held_pids.clone();
+    let held_pids_c = held_pids.clone();
     tokio::spawn(async move {
         loop {
             let mut procs = Vec::new();
+            // detect new pids
+            static SUSPICIOUS: &[&str] = &["nc", "netcat", "ncat", "telnet", "wget", "curl", "sh", "bash", "python", "perl"];
             if let Ok(entries) = fs::read_dir("/proc") {
                 for entry in entries.flatten() {
                     if let Ok(fname) = entry.file_name().into_string() {
@@ -107,6 +133,46 @@ async fn main() -> Result<()> {
                                 "name": comm.trim().to_string(),
                                 "cmd": cmdline.replace('\0', " "),
                             }));
+                            // detect and hold suspicious execs (best-effort)
+                            // we only attempt to SIGSTOP if running as root or have permissions
+                            // use a lightweight heuristic (name or cmd contains suspicious string)
+                            let lower_name = comm.to_lowercase();
+                            let lower_cmd = cmdline.to_lowercase();
+                            let mut is_susp = false;
+                            for s in SUSPICIOUS.iter() {
+                                if lower_name.contains(s) || lower_cmd.contains(s) {
+                                    is_susp = true; break;
+                                }
+                            }
+                            if is_susp {
+                                // consult policy whitelist
+                                let p = policy_p.read().await;
+                                let whitelist = p.get("whitelist_commands").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+                                let mut is_whitelisted = false;
+                                for w in whitelist.iter() {
+                                    if let Some(s) = w.as_str() {
+                                        if lower_name.contains(&s.to_lowercase()) || lower_cmd.contains(&s.to_lowercase()) {
+                                            is_whitelisted = true; break;
+                                        }
+                                    }
+                                }
+                                if !is_whitelisted {
+                                    // best-effort: stop the process to hold it for approval
+                                    if let Ok(status) = Command::new("kill").arg("-STOP").arg(pid.clone()).status() {
+                                        if status.success() {
+                                            let mut h = held_pids_p.lock().await;
+                                            if let Ok(pid_i) = pid.parse::<i32>() { h.insert(pid_i); }
+                                        }
+                                    }
+                                    // notify server about suspicious exec
+                                    let ev = TelemetryEvent {
+                                        host: host_p.clone(),
+                                        event_type: "suspicious_exec".into(),
+                                        data: serde_json::json!({"pid": pid, "name": comm.trim().to_string(), "cmd": cmdline.replace('\0', " ")}),
+                                    };
+                                    let _ = send_event(&client_p, &server_p, &token_p, &ev).await;
+                                }
+                            }
                         }
                     }
                 }
@@ -126,6 +192,7 @@ async fn main() -> Result<()> {
     let server_f = server.clone();
     let token_f = token.clone();
     let host_f = host.clone();
+    let policy_f = policy.clone();
     let paths: Vec<String> = watch_paths.split(',').map(|s| s.trim().to_string()).collect();
 
     tokio::spawn(async move {
@@ -157,9 +224,41 @@ async fn main() -> Result<()> {
                         if path.is_file() {
                             match sha256_of_path(&path) {
                                 Ok(hash) => {
+                                    // check policy blacklist or suspicious paths and quarantine if found
+                                    let mut quarantined = false;
+                                    if let Some(p) = policy_f.read().await.clone().as_object().cloned() {
+                                        if let Some(black) = p.get("blacklist_hashes").and_then(|v| v.as_array()) {
+                                            for h in black {
+                                                if let Some(s) = h.as_str() {
+                                                    if s == hash {
+                                                        // quarantine immediately
+                                                        if let Err(e) = quarantine_file(&path) {
+                                                            eprintln!("quarantine failed: {:?}", e);
+                                                        } else {
+                                                            quarantined = true;
+                                                        }
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        if !quarantined {
+                                            if let Some(wpaths) = p.get("whitelist_paths").and_then(|v| v.as_array()) {
+                                                // if path is whitelisted, skip
+                                                let mut wh = false;
+                                                for wp in wpaths {
+                                                    if let Some(s) = wp.as_str() {
+                                                        if path.to_string_lossy().starts_with(s) { wh = true; break; }
+                                                    }
+                                                }
+                                                if wh { /* do nothing */ }
+                                            }
+                                        }
+                                    }
+
                                     let file_ev = TelemetryEvent {
                                         host: host_f.clone(),
-                                        event_type: "file_event".into(),
+                                        event_type: if quarantined { "file_quarantined" } else { "file_event" }.into(),
                                         data: serde_json::json!({
                                             "path": path.to_string_lossy(),
                                             "sha256": hash,
@@ -175,6 +274,28 @@ async fn main() -> Result<()> {
                 }
                 _ => {}
             }
+        }
+    });
+
+    // Policy poller: fetch updated whitelist/blacklist from server periodically
+    let client_pol = client.clone();
+    let server_pol = server.clone();
+    let token_pol = token.clone();
+    let host_pol = host.clone();
+    let policy_pol = policy.clone();
+    tokio::spawn(async move {
+        loop {
+            let url = format!("{}/policy?host={}", server_pol.trim_end_matches('/'), host_pol);
+            match client_pol.get(&url).send().await {
+                Ok(resp) => {
+                    if let Ok(json) = resp.json::<serde_json::Value>().await {
+                        let mut lock = policy_pol.write().await;
+                        *lock = json;
+                    }
+                }
+                Err(e) => eprintln!("policy poll error: {:?}", e),
+            }
+            sleep(Duration::from_secs(10)).await;
         }
     });
 
@@ -203,6 +324,7 @@ async fn main() -> Result<()> {
     let server_c = server.clone();
     let token_c = token.clone();
     let host_c = host.clone();
+    let held_pids_c2 = held_pids.clone();
     tokio::spawn(async move {
         loop {
             let url = format!("{}/commands?host={}", server_c.trim_end_matches('/'), host_c);
@@ -228,6 +350,24 @@ async fn main() -> Result<()> {
                                     if let Some(ip) = c.get("args").and_then(|a| a.get("ip")).and_then(|p| p.as_str()) {
                                         let _ = block_ip(ip);
                                         result = serde_json::json!({"id": id, "status": "blocked", "ip": ip});
+                                    }
+                                } else if action == "block_port" {
+                                    if let Some(portv) = c.get("args").and_then(|a| a.get("port")).and_then(|p| p.as_u64()) {
+                                        let _ = block_port(portv as u16);
+                                        result = serde_json::json!({"id": id, "status": "blocked_port", "port": portv});
+                                    }
+                                } else if action == "resume" {
+                                    if let Some(pidv) = c.get("args").and_then(|a| a.get("pid")).and_then(|p| p.as_i64()) {
+                                        // send SIGCONT and remove from held_pids
+                                        if let Ok(status) = Command::new("kill").arg("-CONT").arg(pidv.to_string()).status() {
+                                            if status.success() {
+                                                let mut h = held_pids_c2.lock().await;
+                                                h.remove(&(pidv as i32));
+                                                result = serde_json::json!({"id": id, "status": "resumed", "pid": pidv});
+                                            } else {
+                                                result = serde_json::json!({"id": id, "status": "resume_failed", "pid": pidv});
+                                            }
+                                        }
                                     }
                                 }
                                 // send command result back as telemetry

@@ -1,17 +1,15 @@
 # Rust EDR - Linux Endpoint Detection and Response System
 
-A lightweight, high-performance Endpoint Detection and Response (EDR) system built in Rust for Linux systems. This EDR provides real-time monitoring, threat detection, automated response capabilities, and **comprehensive forensics tools** through a CLI interface.
+A production-grade, high-performance Endpoint Detection and Response (EDR) system built in Rust for Ubuntu 24.04 and other Linux distributions. This EDR provides real-time monitoring, policy-driven threat detection, automated response capabilities, and an interactive web UI for human-in-the-loop approval workflows.
 
 ## 📋 Table of Contents
 
 - [Features](#features)
 - [Architecture](#architecture)
-- [Package Alternatives & Comparisons](#package-alternatives--comparisons)
-- [Implementation Approaches](#implementation-approaches)
 - [Installation](#installation)
 - [Usage](#usage)
 - [Configuration](#configuration)
-- [🆕 Forensics & Investigation](#forensics--investigation)
+- [Web UI](#web-ui)
 
 ---
 
@@ -19,33 +17,30 @@ A lightweight, high-performance Endpoint Detection and Response (EDR) system bui
 
 ### Core Monitoring Capabilities
 
-1. **Process Monitoring** - Track process creation, execution, and termination
-2. **File System Monitoring** - Monitor file operations in critical directories
-3. **Network Monitoring** - Track network connections and suspicious activity
-4. **Memory Analysis** - Detect suspicious memory operations
-5. **Behavioral Analytics** - Rule-based threat detection
-6. **Logging System** - Structured event logging
-7. **Response Engine** - Automated threat response
-8. **Management Interface** - CLI for configuration and monitoring
+1. **Process Monitoring** - Real-time process snapshots via `/proc` parsing; heuristic-based detection of suspicious execs (shell scripts, netcat, telnet, etc.)
+2. **File System Monitoring** - inotify-based file watching with SHA-256 hashing; automatic quarantine of blacklisted files
+3. **Network Monitoring** - Parse `/proc/net/tcp` for active TCP connections; block ports and IPs via nftables
+4. **Policy Engine** - Server-side policy with whitelist/blacklist rules; agents poll for updates every 10 seconds
+5. **Automated Response** - SIGSTOP suspicious processes for human approval; quarantine files; kill/resume processes; block IPs/ports
+6. **Command & Control** - REST API for command queue; agents poll and execute actions (kill, quarantine, block_ip, block_port, resume)
+7. **Web UI** - Single-page application with live websocket telemetry; tabs for Processes, Network, Files, Alerts
+8. **Human-in-the-Loop** - Hold suspicious processes (SIGSTOP) until approved from UI; Mark Safe to whitelist patterns
 
-### 🆕 Forensics & Investigation Features
+### Key Capabilities
 
-9. **Automatic Snapshot Capture** - Capture system state on threat detection (processes, network, memory, files)
-10. **Investigation Shells** - Interactive forensic shells for each detected threat
-11. **Log Compression & Archiving** - Automatic compression and retention management
-12. **Forensics CLI Tools** - Archive, extract, compress, and analyze threat data
-13. **Evidence Chain** - Complete audit trail for compliance and incident response
-
-**[→ See FORENSICS_GUIDE.md for complete documentation](FORENSICS_GUIDE.md)**
+- **Total Control**: Kill, quarantine, resume processes; block network ports; move files to quarantine directory
+- **Threat Detection**: Heuristic process detection + hash-based file blacklisting (VirusTotal optional for future integration)
+- **Demo-Ready**: Works on two Ubuntu 24.04 VMs + host monitor; build once, deploy everywhere
+- **Real EDR**: Not a toy project—includes response primitives, policy system, and command queue
 
 ## Quickstart
 
-This repository now contains a minimal, working EDR prototype in Rust.
+This repository contains a working EDR prototype in Rust.
 
-- `edr/server` — a simple HTTP server that accepts telemetry at POST /telemetry and writes events to `edr_server.log`.
-- `edr/agent` — an endpoint agent that collects process, file, and network telemetry and sends it to the server.
+- `edr/server` — HTTP server (warp) with REST API (telemetry, commands, policy, whitelist) and websocket; serves web UI
+- `edr/agent` — endpoint agent that collects process/file/network telemetry, fetches policy, stops suspicious processes, and executes commands
 
-See `INSTRUCTIONS.md` for a step-by-step demo using two Ubuntu 24.04 VMs and `THEORY.md` for notes about design, limitations and next steps.
+See `INSTRUCTIONS.md` for a step-by-step demo using two Ubuntu 24.04 VMs and your main OS as the monitor. See `THEORY.md` for notes about design, limitations, and next steps.
 
 ---
 
@@ -53,30 +48,49 @@ See `INSTRUCTIONS.md` for a step-by-step demo using two Ubuntu 24.04 VMs and `TH
 
 ```
 ┌─────────────────────────────────────────┐
-│         Management Interface            │
-│              (CLI/API)                  │
+│            Web UI (Browser)             │
+│   Processes | Network | Files | Alerts  │
+│   (Kill, Quarantine, Block, Approve)    │
+└──────────────┬──────────────────────────┘
+               │ websocket + REST
+┌──────────────▼──────────────────────────┐
+│          EDR Server (Monitor)           │
+│    POST /telemetry, GET /commands,      │
+│    POST /command, GET /policy,          │
+│    POST /whitelist, /ws, static UI      │
+│  ┌──────────────────────────┐          │
+│  │  In-Memory Storage       │          │
+│  │  (commands, policy,      │          │
+│  │   telemetry broadcast)   │          │
+│  └──────────────────────────┘          │
+│  Logs: edr_server.log (NDJSON)         │
+└──────────────┬──────────────────────────┘
+               │ HTTP (polling)
+┌──────────────▼──────────────────────────┐
+│         EDR Agents (Endpoints)          │
+│  ┌──────────────────────────┐          │
+│  │  Telemetry Collectors    │          │
+│  │  - Process (proc parse)  │          │
+│  │  - File (notify + SHA256)│          │
+│  │  - Network (proc/net/tcp)│          │
+│  └──────────────────────────┘          │
+│  ┌──────────────────────────┐          │
+│  │  Policy Engine           │          │
+│  │  - Fetch policy (10s)    │          │
+│  │  - Whitelist / Blacklist │          │
+│  │  - Held PIDs (SIGSTOP)   │          │
+│  └──────────────────────────┘          │
+│  ┌──────────────────────────┐          │
+│  │  Command Executor        │          │
+│  │  - kill, quarantine,     │          │
+│  │    block_ip, block_port, │          │
+│  │    resume                │          │
+│  └──────────────────────────┘          │
 └──────────────┬──────────────────────────┘
                │
 ┌──────────────▼──────────────────────────┐
-│          Detection Engine               │
-│    ┌──────────────────────────┐        │
-│    │   Behavioral Rules       │        │
-│    │   Event Correlation      │        │
-│    │   Threat Scoring         │        │
-│    └──────────────────────────┘        │
-└──────────────┬──────────────────────────┘
-               │
-┌──────────────▼──────────────────────────┐
-│         Monitoring Agents               │
-│  ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐  │
-│  │Process│ │File  │ │Network│ │Memory│  │
-│  │Monitor│ │Monitor│ │Monitor│ │Monitor│ │
-│  └──────┘ └──────┘ └──────┘ └──────┘  │
-└──────────────┬──────────────────────────┘
-               │
-┌──────────────▼──────────────────────────┐
-│         Linux Kernel APIs               │
-│   (proc, netlink, inotify, eBPF)       │
+│         Linux Kernel / OS               │
+│   (proc, notify, kill, nft, rename)     │
 └─────────────────────────────────────────┘
 ```
 

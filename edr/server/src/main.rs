@@ -41,9 +41,14 @@ async fn main() -> Result<()> {
 
     let token = std::env::var("EDR_SERVER_TOKEN").ok();
 
-    // In-memory storage for recent events and pending commands
+    // In-memory storage for recent events, pending commands and policies
     let events: Arc<Mutex<Vec<TelemetryEvent>>> = Arc::new(Mutex::new(Vec::new()));
     let cmds: Arc<Mutex<CmdMap>> = Arc::new(Mutex::new(HashMap::new()));
+    let policies = Arc::new(Mutex::new(serde_json::json!({
+        "whitelist_commands": [],
+        "whitelist_paths": [],
+        "blacklist_hashes": []
+    })));
 
     // broadcast channel to push telemetry to websocket clients
     let (tx, _) = broadcast::channel::<TelemetryEvent>(1024);
@@ -88,6 +93,19 @@ async fn main() -> Result<()> {
             }
         });
 
+    // GET /policy?host=... -> agent polling to fetch policy (whitelist/blacklist)
+    let policies_clone = policies.clone();
+    let get_policy = warp::get()
+        .and(warp::path("policy"))
+        .and(warp::query::<HashMap<String, String>>())
+        .and_then(move |_q: HashMap<String, String>| {
+            let policies = policies_clone.clone();
+            async move {
+                let p = policies.lock().await;
+                Ok::<_, Infallible>(warp::reply::json(&*p))
+            }
+        });
+
     // POST /command -> admin UI posts a command to a target host
     let cmds_clone2 = cmds.clone();
     let post_cmd = warp::post()
@@ -98,6 +116,36 @@ async fn main() -> Result<()> {
             async move {
                 let mut cm = cmds.lock().await;
                 cm.entry(c.target.clone()).or_insert_with(Vec::new).push(c.clone());
+                Ok::<_, Infallible>(warp::reply::with_status("ok", warp::http::StatusCode::CREATED))
+            }
+        });
+
+    // POST /whitelist -> mark a command/path/hash as safe (payload: {type: "command"|"path"|"hash", value: "..."})
+    let policies_clone2 = policies.clone();
+    let post_whitelist = warp::post()
+        .and(warp::path("whitelist"))
+        .and(warp::body::json())
+        .and_then(move |v: serde_json::Value| {
+            let policies = policies_clone2.clone();
+            async move {
+                if let Some(t) = v.get("type").and_then(|x| x.as_str()) {
+                    if let Some(val) = v.get("value").and_then(|x| x.as_str()) {
+                        let mut p = policies.lock().await;
+                        if t == "command" {
+                            if let Some(arr) = p.get_mut("whitelist_commands").and_then(|a| a.as_array_mut()) {
+                                arr.push(serde_json::Value::String(val.to_string()));
+                            }
+                        } else if t == "path" {
+                            if let Some(arr) = p.get_mut("whitelist_paths").and_then(|a| a.as_array_mut()) {
+                                arr.push(serde_json::Value::String(val.to_string()));
+                            }
+                        } else if t == "hash" {
+                            if let Some(arr) = p.get_mut("blacklist_hashes").and_then(|a| a.as_array_mut()) {
+                                arr.push(serde_json::Value::String(val.to_string()));
+                            }
+                        }
+                    }
+                }
                 Ok::<_, Infallible>(warp::reply::with_status("ok", warp::http::StatusCode::CREATED))
             }
         });
@@ -135,7 +183,7 @@ async fn main() -> Result<()> {
     let ui_path = std::env::var("EDR_UI_PATH").unwrap_or_else(|_| "edr/server/ui/index.html".to_string());
     let ui = warp::get().and(warp::path::end()).and(warp::fs::file(ui_path));
 
-    let routes = telemetry.or(get_cmds).or(post_cmd).or(ws_route).or(ui);
+    let routes = telemetry.or(get_cmds).or(get_policy).or(post_cmd).or(post_whitelist).or(ws_route).or(ui);
 
     let addr: SocketAddr = "0.0.0.0:8080".parse().unwrap();
     println!("edr-server listening on {}", addr);

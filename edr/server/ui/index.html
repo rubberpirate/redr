@@ -512,10 +512,20 @@
       state.alerts.forEach(alert => {
         const card = document.createElement('div');
         card.className = `alert-card ${alert.type}`;
+        const safeBtn = `<button onclick='markSafe(${JSON.stringify(alert)})' class="btn">Mark Safe</button>`;
+        const approveBtn = alert.desc && alert.desc.includes('PID:') ? `<button onclick='approveResume(${JSON.stringify(alert)})' class="btn">Approve</button>` : '';
         card.innerHTML = `
-          <div class="alert-title">⚠️ ${escapeHtml(alert.title)}</div>
-          <div class="alert-desc">${escapeHtml(alert.desc)}</div>
-          <small style="color:#95a5a6;">${alert.time.toLocaleString()}</small>
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <div>
+              <div class="alert-title">⚠️ ${escapeHtml(alert.title)}</div>
+              <div class="alert-desc">${escapeHtml(alert.desc)}</div>
+              <small style="color:#95a5a6;">${alert.time.toLocaleString()}</small>
+            </div>
+            <div style="display:flex; flex-direction:column; gap:6px;">
+              ${approveBtn}
+              ${safeBtn}
+            </div>
+          </div>
         `;
         container.appendChild(card);
       });
@@ -601,6 +611,39 @@
         renderAlerts();
         updateStats();
       }
+    }
+
+    // Mark an alert safe (whitelist) by posting to server
+    function markSafe(alert) {
+      // infer type
+      let payload = { type: 'command', value: '' };
+      if (alert.title && alert.title.toLowerCase().includes('file')) {
+        payload.type = 'path';
+        // try to extract path from desc
+        const m = alert.desc.match(/(\/[\w\-\.\/~]+\/?[\w\-\.]*)/);
+        payload.value = m ? m[0] : '';
+      } else {
+        payload.type = 'command';
+        const m = alert.desc.match(/Process:\s*([^\s]+)/);
+        payload.value = m ? m[1] : '';
+      }
+      if (!payload.value) { alert('Could not infer item to whitelist'); return; }
+      fetch('/whitelist', { method: 'POST', headers: {'content-type':'application/json'}, body: JSON.stringify(payload) })
+        .then(r => { if (r.ok) alert('Marked safe (whitelisted)'); else alert('Whitelist failed'); });
+    }
+
+    // Approve a held process (resume)
+    function approveResume(alert) {
+      // extract PID and host from alert.desc/title heuristically
+      const pidMatch = alert.desc.match(/PID:\s*(\d+)/);
+      const hostMatch = alert.desc.match(/on\s([^,\n]+)/) || alert.title.match(/on\s([^,\n]+)/);
+      const pid = pidMatch ? parseInt(pidMatch[1]) : null;
+      const host = alert.host || (hostMatch ? hostMatch[1] : null);
+      if (!pid || !host) { alert('Could not infer pid/host'); return; }
+      const id = `${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
+      const cmd = { id, target: host, action: 'resume', args: { pid } };
+      fetch('/command', { method: 'POST', headers: {'content-type':'application/json'}, body: JSON.stringify(cmd) })
+        .then(r => { if (r.ok) alert('Resume command queued'); else alert('Failed to queue resume'); });
     }
     
     function sortNetworkBy(column) {
