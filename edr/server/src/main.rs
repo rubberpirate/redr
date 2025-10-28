@@ -131,8 +131,9 @@ async fn main() -> Result<()> {
             })
         });
 
-    // Serve static UI
-    let ui = warp::get().and(warp::path::end()).and(warp::fs::file("ui/index.html"));
+    // Serve static UI - use path relative to server source or embedded fallback
+    let ui_path = std::env::var("EDR_UI_PATH").unwrap_or_else(|_| "edr/server/ui/index.html".to_string());
+    let ui = warp::get().and(warp::path::end()).and(warp::fs::file(ui_path));
 
     let routes = telemetry.or(get_cmds).or(post_cmd).or(ws_route).or(ui);
 

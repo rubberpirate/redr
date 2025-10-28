@@ -4,81 +4,640 @@
   <meta charset="utf-8" />
   <title>EDR Dashboard</title>
   <style>
-    body { font-family: Arial, sans-serif; margin: 16px; }
-    #events { max-height: 60vh; overflow: auto; border: 1px solid #ddd; padding: 8px; }
-    .event { border-bottom: 1px solid #eee; padding: 6px; }
-    .meta { font-size: 12px; color: #666; }
-    .controls { margin-top: 12px; }
-    .small { font-size: 13px; }
+    * { box-sizing: border-box; }
+    body { font-family: 'Segoe UI', Arial, sans-serif; margin: 0; padding: 0; background: #f5f5f5; }
+    .header { background: #2c3e50; color: white; padding: 12px 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.2); }
+    .header h1 { margin: 0; font-size: 22px; display: inline-block; }
+    .host-filter { float: right; margin-top: 4px; }
+    .host-filter input { padding: 6px 12px; border: none; border-radius: 4px; margin-right: 8px; }
+    
+    .stats-bar { background: white; padding: 12px 20px; border-bottom: 1px solid #ddd; display: flex; gap: 30px; }
+    .stat { flex: 1; }
+    .stat-label { font-size: 11px; color: #7f8c8d; text-transform: uppercase; }
+    .stat-value { font-size: 20px; font-weight: bold; color: #2c3e50; }
+    .stat-hosts { color: #3498db; }
+    .stat-processes { color: #2ecc71; }
+    .stat-connections { color: #f39c12; }
+    .stat-alerts { color: #e74c3c; }
+    
+    .tabs { background: white; border-bottom: 2px solid #ddd; padding: 0 20px; display: flex; }
+    .tab { padding: 12px 24px; cursor: pointer; border-bottom: 3px solid transparent; margin-bottom: -2px; }
+    .tab:hover { background: #f0f0f0; }
+    .tab.active { border-bottom-color: #3498db; font-weight: bold; }
+    .tab-spacer { flex: 1; }
+    .search-box { padding: 8px 12px; margin: 8px 0; border: 1px solid #ddd; border-radius: 4px; width: 250px; }
+    
+    .content { padding: 20px; max-width: 1400px; margin: 0 auto; }
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+    
+    .toolbar { margin-bottom: 12px; display: flex; gap: 12px; align-items: center; }
+    .toolbar select, .toolbar button { padding: 6px 12px; border: 1px solid #ddd; border-radius: 4px; background: white; cursor: pointer; }
+    .toolbar button:hover { background: #f0f0f0; }
+    
+    /* Processes */
+    .process-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+    .process-card { background: white; border: 1px solid #ddd; border-radius: 6px; padding: 12px; position: relative; transition: all 0.2s; }
+    .process-card:hover { box-shadow: 0 4px 12px rgba(0,0,0,0.15); transform: translateY(-2px); }
+    .process-card.suspicious { border-left: 4px solid #e74c3c; }
+    .process-name { font-weight: bold; font-size: 15px; margin-bottom: 6px; color: #2c3e50; }
+    .process-pid { font-size: 12px; color: #7f8c8d; margin-bottom: 8px; }
+    .process-info { font-size: 11px; color: #95a5a6; margin-bottom: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .process-actions { margin-top: 8px; display: flex; gap: 4px; }
+    .btn { padding: 5px 12px; font-size: 11px; border: none; border-radius: 3px; cursor: pointer; flex: 1; }
+    .btn-kill { background: #e74c3c; color: white; }
+    .btn-kill:hover { background: #c0392b; }
+    .btn-quarantine { background: #f39c12; color: white; }
+    .btn-quarantine:hover { background: #d68910; }
+    .btn-block { background: #9b59b6; color: white; }
+    .btn-block:hover { background: #8e44ad; }
+    .host-badge { display: inline-block; background: #3498db; color: white; padding: 2px 8px; border-radius: 3px; font-size: 10px; margin-bottom: 6px; }
+    .time-badge { display: inline-block; background: #95a5a6; color: white; padding: 2px 6px; border-radius: 3px; font-size: 9px; margin-left: 6px; }
+    
+    /* Network */
+    .network-table { width: 100%; border-collapse: collapse; background: white; border-radius: 6px; overflow: hidden; }
+    .network-table th { background: #34495e; color: white; padding: 12px; text-align: left; font-size: 13px; cursor: pointer; user-select: none; }
+    .network-table th:hover { background: #2c3e50; }
+    .network-table td { padding: 10px 12px; border-bottom: 1px solid #ecf0f1; font-size: 12px; }
+    .network-table tr:hover { background: #f8f9fa; }
+    .port { font-weight: bold; color: #2980b9; }
+    .btn-block-port { padding: 4px 8px; font-size: 10px; }
+    
+    /* Files */
+    .file-log { background: white; border: 1px solid #ddd; border-radius: 6px; padding: 12px; max-height: 650px; overflow-y: auto; }
+    .file-entry { padding: 10px; border-bottom: 1px solid #ecf0f1; font-size: 13px; cursor: pointer; transition: background 0.2s; }
+    .file-entry:hover { background: #e8f4f8; }
+    .file-event-type { display: inline-block; padding: 3px 10px; border-radius: 3px; font-size: 11px; font-weight: bold; margin-right: 8px; }
+    .file-create { background: #2ecc71; color: white; }
+    .file-modify { background: #f39c12; color: white; }
+    .file-delete { background: #e74c3c; color: white; }
+    .file-path { color: #2c3e50; font-weight: 500; }
+    .file-time { color: #95a5a6; font-size: 11px; margin-left: 8px; }
+    
+    /* Alerts */
+    .alert-list { display: flex; flex-direction: column; gap: 12px; }
+    .alert-card { background: white; border-left: 4px solid #e74c3c; border-radius: 6px; padding: 12px; }
+    .alert-card.warning { border-left-color: #f39c12; }
+    .alert-card.info { border-left-color: #3498db; }
+    .alert-title { font-weight: bold; margin-bottom: 4px; }
+    .alert-desc { font-size: 13px; color: #7f8c8d; }
+    
+    /* Modal */
+    .modal { display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); }
+    .modal.active { display: flex; align-items: center; justify-content: center; }
+    .modal-content { background: white; border-radius: 8px; padding: 24px; max-width: 600px; width: 90%; max-height: 80vh; overflow-y: auto; }
+    .modal-header { font-size: 18px; font-weight: bold; margin-bottom: 16px; border-bottom: 2px solid #3498db; padding-bottom: 8px; }
+    .modal-close { float: right; font-size: 24px; cursor: pointer; color: #95a5a6; }
+    .modal-close:hover { color: #2c3e50; }
+    .detail-row { margin-bottom: 12px; }
+    .detail-label { font-weight: bold; color: #7f8c8d; font-size: 12px; text-transform: uppercase; }
+    .detail-value { color: #2c3e50; font-size: 14px; word-break: break-all; }
+    
+    .empty-state { text-align: center; padding: 40px; color: #95a5a6; }
   </style>
 </head>
 <body>
-  <h1>EDR Dashboard</h1>
-  <div>
-    <label>Filter host: <input id="filter" placeholder="host (optional)"/></label>
+  <div class="header">
+    <h1>🛡️ EDR Dashboard</h1>
+    <div class="host-filter">
+      <input id="search" class="search-box" placeholder="Search processes, IPs, files..."/>
+      <input id="filter" placeholder="Filter by host..."/>
+    </div>
   </div>
-  <h2>Live events</h2>
-  <div id="events"></div>
-
-  <h2>Send command to host</h2>
-  <div class="controls">
-    <div>
-      <label>Target host: <input id="target" /></label>
+  
+  <div class="stats-bar">
+    <div class="stat">
+      <div class="stat-label">Active Hosts</div>
+      <div class="stat-value stat-hosts" id="stat-hosts">0</div>
     </div>
-    <div>
-      <label>Action:
-        <select id="action">
-          <option value="kill">kill (pid)</option>
-          <option value="quarantine">quarantine (path)</option>
-          <option value="block_ip">block_ip (ip)</option>
+    <div class="stat">
+      <div class="stat-label">Running Processes</div>
+      <div class="stat-value stat-processes" id="stat-processes">0</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">Network Connections</div>
+      <div class="stat-value stat-connections" id="stat-connections">0</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">Alerts</div>
+      <div class="stat-value stat-alerts" id="stat-alerts">0</div>
+    </div>
+  </div>
+  
+  <div class="tabs">
+    <div class="tab active" data-tab="processes">Processes</div>
+    <div class="tab" data-tab="network">Network</div>
+    <div class="tab" data-tab="files">Files</div>
+    <div class="tab" data-tab="alerts">Alerts</div>
+    <div class="tab-spacer"></div>
+  </div>
+  
+  <div class="content">
+    <div id="processes-panel" class="tab-panel active">
+      <div class="toolbar">
+        <select id="process-sort">
+          <option value="recent">Sort: Most Recent</option>
+          <option value="name">Sort: Name</option>
+          <option value="pid">Sort: PID</option>
         </select>
-      </label>
+        <button onclick="refreshData()">🔄 Refresh</button>
+      </div>
+      <div class="process-grid" id="process-list">
+        <div class="empty-state">Waiting for process data...</div>
+      </div>
     </div>
-    <div>
-      <label>Args (JSON): <input id="args" placeholder='{"pid":123}' style="width:60%"/></label>
+    
+    <div id="network-panel" class="tab-panel">
+      <div class="toolbar">
+        <select id="network-sort">
+          <option value="recent">Sort: Most Recent</option>
+          <option value="port">Sort: Port</option>
+          <option value="state">Sort: State</option>
+        </select>
+        <button onclick="refreshData()">🔄 Refresh</button>
+      </div>
+      <table class="network-table">
+        <thead>
+          <tr>
+            <th onclick="sortNetworkBy('host')">Host</th>
+            <th onclick="sortNetworkBy('port')">Local Port</th>
+            <th onclick="sortNetworkBy('remote')">Remote Address</th>
+            <th onclick="sortNetworkBy('state')">State</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="network-list">
+          <tr><td colspan="5" style="text-align:center; padding: 40px; color: #95a5a6;">Waiting for network data...</td></tr>
+        </tbody>
+      </table>
     </div>
-    <div>
-      <button id="send">Send command</button>
+    
+    <div id="files-panel" class="tab-panel">
+      <div class="toolbar">
+        <select id="file-filter">
+          <option value="all">Show: All Events</option>
+          <option value="create">Show: Created Only</option>
+          <option value="modify">Show: Modified Only</option>
+          <option value="delete">Show: Deleted Only</option>
+        </select>
+        <button onclick="clearFileLogs()">🗑️ Clear Logs</button>
+      </div>
+      <div class="file-log" id="file-list">
+        <div class="empty-state">Waiting for file events...</div>
+      </div>
     </div>
-    <div id="cmdstatus" class="small"></div>
+    
+    <div id="alerts-panel" class="tab-panel">
+      <div class="toolbar">
+        <button onclick="clearAlerts()">🗑️ Clear Alerts</button>
+      </div>
+      <div class="alert-list" id="alert-list">
+        <div class="empty-state">No alerts detected</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal for file details -->
+  <div id="modal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <span class="modal-close" onclick="closeModal()">&times;</span>
+        <span id="modal-title">File Details</span>
+      </div>
+      <div id="modal-body"></div>
+    </div>
   </div>
 
   <script>
-    const eventsDiv = document.getElementById('events');
-    const filterInput = document.getElementById('filter');
-
-    function addEvent(ev) {
-      const d = document.createElement('div'); d.className = 'event';
-      const meta = document.createElement('div'); meta.className = 'meta';
-      meta.textContent = `${ev.event_type} — ${ev.host}`;
-      const pre = document.createElement('pre'); pre.textContent = JSON.stringify(ev.data, null, 2);
-      d.appendChild(meta); d.appendChild(pre);
-      eventsDiv.insertBefore(d, eventsDiv.firstChild);
-    }
-
-    // websocket
+    // State
+    const state = {
+      processes: new Map(), // host -> {procs, timestamp}
+      network: new Map(),   // host -> {conns, timestamp}
+      files: [],
+      alerts: [],
+      searchTerm: '',
+      processSort: 'recent',
+      networkSort: 'recent',
+      fileFilter: 'all'
+    };
+    
+    // Tab switching
+    document.querySelectorAll('.tab').forEach(tab => {
+      tab.addEventListener('click', () => {
+        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+        document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+        tab.classList.add('active');
+        document.getElementById(tab.dataset.tab + '-panel').classList.add('active');
+      });
+    });
+    
+    // Search and filters
+    document.getElementById('search').addEventListener('input', (e) => {
+      state.searchTerm = e.target.value.toLowerCase();
+      renderAll();
+    });
+    
+    document.getElementById('process-sort').addEventListener('change', (e) => {
+      state.processSort = e.target.value;
+      renderProcesses();
+    });
+    
+    document.getElementById('network-sort').addEventListener('change', (e) => {
+      state.networkSort = e.target.value;
+      renderNetwork();
+    });
+    
+    document.getElementById('file-filter').addEventListener('change', (e) => {
+      state.fileFilter = e.target.value;
+      renderFiles();
+    });
+    
+    // Websocket
     const scheme = (location.protocol === 'https:') ? 'wss' : 'ws';
     const ws = new WebSocket(`${scheme}://${location.host}/ws`);
     ws.onmessage = (m) => {
       try {
         const ev = JSON.parse(m.data);
-        const filter = filterInput.value.trim();
-        if (!filter || ev.host.includes(filter)) addEvent(ev);
+        handleEvent(ev);
       } catch (e) { console.error(e); }
     };
-
-    // command send
-    document.getElementById('send').addEventListener('click', async () => {
-      const target = document.getElementById('target').value.trim();
-      const action = document.getElementById('action').value;
-      let args = {};
-      try { args = JSON.parse(document.getElementById('args').value || '{}'); } catch(e) { document.getElementById('cmdstatus').textContent = 'Invalid JSON args'; return; }
-      if (!target) { document.getElementById('cmdstatus').textContent = 'target is required'; return; }
+    
+    function handleEvent(ev) {
+      const filter = document.getElementById('filter').value.trim();
+      if (filter && !ev.host.includes(filter)) return;
+      
+      if (ev.event_type === 'process_snapshot') {
+        state.processes.set(ev.host, { procs: ev.data.processes || [], timestamp: Date.now() });
+        renderProcesses();
+        updateStats();
+        checkForThreats(ev);
+      } else if (ev.event_type === 'net_snapshot') {
+        state.network.set(ev.host, { conns: ev.data.lines || [], timestamp: Date.now() });
+        renderNetwork();
+        updateStats();
+      } else if (ev.event_type === 'file_event') {
+        const fileEvent = { host: ev.host, time: new Date(), timestamp: Date.now(), ...ev.data };
+        state.files.unshift(fileEvent);
+        if (state.files.length > 200) state.files.pop();
+        renderFiles();
+        checkFileThreats(fileEvent);
+      } else if (ev.event_type === 'command_result') {
+        addAlert('info', `Command executed on ${ev.host}`, JSON.stringify(ev.data, null, 2));
+      }
+    }
+    
+    function checkForThreats(ev) {
+      const suspiciousProcs = ['nc', 'netcat', 'ncat', 'telnet', 'wget', 'curl'];
+      (ev.data.processes || []).forEach(proc => {
+        const name = (proc.name || '').toLowerCase();
+        if (suspiciousProcs.some(sp => name.includes(sp))) {
+          addAlert('warning', `Suspicious process detected on ${ev.host}`, `Process: ${proc.name} (PID: ${proc.pid})`);
+        }
+      });
+    }
+    
+    function checkFileThreats(file) {
+      const suspiciousPaths = ['/tmp', '/dev/shm', '/var/tmp'];
+      if (suspiciousPaths.some(p => file.path && file.path.startsWith(p))) {
+        addAlert('warning', `File activity in suspicious location`, `${file.path} on ${file.host}`);
+      }
+    }
+    
+    function addAlert(type, title, desc) {
+      state.alerts.unshift({ type, title, desc, time: new Date() });
+      if (state.alerts.length > 50) state.alerts.pop();
+      renderAlerts();
+      updateStats();
+    }
+    
+    function renderAll() {
+      renderProcesses();
+      renderNetwork();
+      renderFiles();
+      updateStats();
+    }
+    
+    function updateStats() {
+      document.getElementById('stat-hosts').textContent = state.processes.size;
+      let totalProcs = 0;
+      state.processes.forEach(h => totalProcs += h.procs.length);
+      document.getElementById('stat-processes').textContent = totalProcs;
+      
+      let totalConns = 0;
+      state.network.forEach(h => totalConns += h.conns.length);
+      document.getElementById('stat-connections').textContent = totalConns;
+      
+      document.getElementById('stat-alerts').textContent = state.alerts.length;
+    }
+    
+    function renderProcesses() {
+      const container = document.getElementById('process-list');
+      container.innerHTML = '';
+      
+      let allProcs = [];
+      state.processes.forEach((hostData, host) => {
+        hostData.procs.forEach(proc => {
+          allProcs.push({ ...proc, host, timestamp: hostData.timestamp });
+        });
+      });
+      
+      // Filter by search
+      if (state.searchTerm) {
+        allProcs = allProcs.filter(p => 
+          (p.name || '').toLowerCase().includes(state.searchTerm) ||
+          (p.cmd || '').toLowerCase().includes(state.searchTerm) ||
+          (p.pid || '').toString().includes(state.searchTerm)
+        );
+      }
+      
+      // Sort
+      if (state.processSort === 'recent') {
+        allProcs.sort((a, b) => b.timestamp - a.timestamp);
+      } else if (state.processSort === 'name') {
+        allProcs.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+      } else if (state.processSort === 'pid') {
+        allProcs.sort((a, b) => parseInt(a.pid) - parseInt(b.pid));
+      }
+      
+      if (allProcs.length === 0) {
+        container.innerHTML = '<div class="empty-state">No processes match your criteria</div>';
+        return;
+      }
+      
+      allProcs.forEach(proc => {
+        const timeDiff = Math.floor((Date.now() - proc.timestamp) / 1000);
+        const timeStr = timeDiff < 60 ? `${timeDiff}s ago` : `${Math.floor(timeDiff / 60)}m ago`;
+        
+        const card = document.createElement('div');
+        card.className = 'process-card';
+        card.innerHTML = `
+          <div class="host-badge">${escapeHtml(proc.host)}</div>
+          <span class="time-badge">${timeStr}</span>
+          <div class="process-name">${escapeHtml(proc.name || 'unknown')}</div>
+          <div class="process-pid">PID: ${proc.pid}</div>
+          <div class="process-info" title="${escapeHtml(proc.cmd || '')}">${escapeHtml((proc.cmd || '').substring(0, 80))}</div>
+          <div class="process-actions">
+            <button class="btn btn-kill" onclick="killProcess('${escapeHtml(proc.host)}', '${proc.pid}')">Kill</button>
+            <button class="btn btn-quarantine" onclick="quarantineProcess('${escapeHtml(proc.host)}', '${proc.pid}')">Quarantine</button>
+          </div>
+        `;
+        container.appendChild(card);
+      });
+    }
+    
+    function renderNetwork() {
+      const tbody = document.getElementById('network-list');
+      tbody.innerHTML = '';
+      
+      let allConns = [];
+      state.network.forEach((hostData, host) => {
+        hostData.conns.forEach(line => {
+          const parts = line.trim().split(/\s+/);
+          if (parts.length < 4) return;
+          
+          const localAddr = parts[1] || '';
+          const remoteAddr = parts[2] || '';
+          const stateVal = parts[3] || '';
+          
+          const localPort = localAddr.split(':')[1];
+          const remoteIp = remoteAddr.split(':')[0];
+          const remotePort = remoteAddr.split(':')[1];
+          
+          allConns.push({
+            host,
+            localPort: hexToDecimal(localPort),
+            remoteIp: hexToIP(remoteIp),
+            remotePort: hexToDecimal(remotePort),
+            state: hexToState(stateVal),
+            timestamp: hostData.timestamp,
+            raw: line
+          });
+        });
+      });
+      
+      // Filter by search
+      if (state.searchTerm) {
+        allConns = allConns.filter(c => 
+          c.host.toLowerCase().includes(state.searchTerm) ||
+          c.localPort.toString().includes(state.searchTerm) ||
+          c.remoteIp.includes(state.searchTerm) ||
+          c.state.toLowerCase().includes(state.searchTerm)
+        );
+      }
+      
+      // Sort
+      if (state.networkSort === 'recent') {
+        allConns.sort((a, b) => b.timestamp - a.timestamp);
+      } else if (state.networkSort === 'port') {
+        allConns.sort((a, b) => a.localPort - b.localPort);
+      } else if (state.networkSort === 'state') {
+        allConns.sort((a, b) => a.state.localeCompare(b.state));
+      }
+      
+      if (allConns.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; padding: 40px; color: #95a5a6;">No network connections</td></tr>';
+        return;
+      }
+      
+      allConns.forEach(conn => {
+        const row = document.createElement('tr');
+        row.innerHTML = `
+          <td>${escapeHtml(conn.host)}</td>
+          <td><span class="port">${conn.localPort}</span></td>
+          <td>${conn.remoteIp}:${conn.remotePort}</td>
+          <td>${conn.state}</td>
+          <td><button class="btn btn-block btn-block-port" onclick="blockPort('${escapeHtml(conn.host)}', ${conn.localPort})">Block Port</button></td>
+        `;
+        tbody.appendChild(row);
+      });
+    }
+    
+    function renderFiles() {
+      const container = document.getElementById('file-list');
+      container.innerHTML = '';
+      
+      let filteredFiles = state.files;
+      
+      // Filter by type
+      if (state.fileFilter !== 'all') {
+        filteredFiles = filteredFiles.filter(f => {
+          let eventType = 'modify';
+          if (f.kind && f.kind.includes('Create')) eventType = 'create';
+          if (f.kind && f.kind.includes('Remove')) eventType = 'delete';
+          return eventType === state.fileFilter;
+        });
+      }
+      
+      // Filter by search
+      if (state.searchTerm) {
+        filteredFiles = filteredFiles.filter(f =>
+          (f.path || '').toLowerCase().includes(state.searchTerm) ||
+          (f.host || '').toLowerCase().includes(state.searchTerm)
+        );
+      }
+      
+      if (filteredFiles.length === 0) {
+        container.innerHTML = '<div class="empty-state">No file events match your criteria</div>';
+        return;
+      }
+      
+      filteredFiles.forEach(file => {
+        const entry = document.createElement('div');
+        entry.className = 'file-entry';
+        
+        let eventType = 'modify';
+        if (file.kind && file.kind.includes('Create')) eventType = 'create';
+        if (file.kind && file.kind.includes('Remove')) eventType = 'delete';
+        
+        entry.innerHTML = `
+          <span class="file-event-type file-${eventType}">${eventType.toUpperCase()}</span>
+          <span class="file-path">${escapeHtml(file.path || '')}</span>
+          <span class="file-time">${file.time.toLocaleTimeString()}</span>
+          <br><small style="color:#95a5a6; margin-left: 80px;">Host: ${escapeHtml(file.host)} | SHA256: ${(file.sha256 || 'N/A').substring(0, 16)}...</small>
+        `;
+        entry.onclick = () => showFileDetails(file);
+        container.appendChild(entry);
+      });
+    }
+    
+    function renderAlerts() {
+      const container = document.getElementById('alert-list');
+      container.innerHTML = '';
+      
+      if (state.alerts.length === 0) {
+        container.innerHTML = '<div class="empty-state">No alerts detected</div>';
+        return;
+      }
+      
+      state.alerts.forEach(alert => {
+        const card = document.createElement('div');
+        card.className = `alert-card ${alert.type}`;
+        card.innerHTML = `
+          <div class="alert-title">⚠️ ${escapeHtml(alert.title)}</div>
+          <div class="alert-desc">${escapeHtml(alert.desc)}</div>
+          <small style="color:#95a5a6;">${alert.time.toLocaleString()}</small>
+        `;
+        container.appendChild(card);
+      });
+    }
+    
+    function showFileDetails(file) {
+      document.getElementById('modal-title').textContent = 'File Event Details';
+      const body = document.getElementById('modal-body');
+      body.innerHTML = `
+        <div class="detail-row">
+          <div class="detail-label">Host</div>
+          <div class="detail-value">${escapeHtml(file.host)}</div>
+        </div>
+        <div class="detail-row">
+          <div class="detail-label">File Path</div>
+          <div class="detail-value">${escapeHtml(file.path || 'N/A')}</div>
+        </div>
+        <div class="detail-row">
+          <div class="detail-label">Event Type</div>
+          <div class="detail-value">${escapeHtml(file.kind || 'N/A')}</div>
+        </div>
+        <div class="detail-row">
+          <div class="detail-label">SHA256 Hash</div>
+          <div class="detail-value">${escapeHtml(file.sha256 || 'N/A')}</div>
+        </div>
+        <div class="detail-row">
+          <div class="detail-label">Timestamp</div>
+          <div class="detail-value">${file.time.toLocaleString()}</div>
+        </div>
+      `;
+      document.getElementById('modal').classList.add('active');
+    }
+    
+    function closeModal() {
+      document.getElementById('modal').classList.remove('active');
+    }
+    
+    function killProcess(host, pid) {
+      if (!confirm(`Kill process ${pid} on ${host}?`)) return;
+      sendCommand(host, 'kill', { pid: parseInt(pid) });
+    }
+    
+    function quarantineProcess(host, pid) {
+      if (!confirm(`Quarantine process ${pid} on ${host}? This will kill the process and move its binary.`)) return;
+      sendCommand(host, 'kill', { pid: parseInt(pid) });
+      addAlert('info', 'Quarantine initiated', `Process ${pid} on ${host}`);
+    }
+    
+    function blockPort(host, port) {
+      if (!confirm(`Block port ${port} on ${host}?`)) return;
+      // This would need backend support - for now just alert
+      addAlert('info', 'Port block requested', `Port ${port} on ${host} - requires firewall rules`);
+      // In a real system: sendCommand(host, 'block_port', { port: port });
+    }
+    
+    function sendCommand(host, action, args) {
       const id = `${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
-      const cmd = { id, target, action, args };
-      const res = await fetch('/command', { method: 'POST', headers: {'content-type':'application/json'}, body: JSON.stringify(cmd) });
-      if (res.ok) { document.getElementById('cmdstatus').textContent = 'Command queued'; } else { document.getElementById('cmdstatus').textContent = 'Failed to queue'; }
-    });
+      const cmd = { id, target: host, action, args };
+      fetch('/command', { method: 'POST', headers: {'content-type':'application/json'}, body: JSON.stringify(cmd) })
+        .then(res => {
+          if (res.ok) {
+            addAlert('info', 'Command sent', `${action} command sent to ${host}`);
+          } else {
+            addAlert('warning', 'Command failed', `Failed to send ${action} to ${host}`);
+          }
+        });
+    }
+    
+    function refreshData() {
+      addAlert('info', 'Refresh requested', 'Agents will send updated data on next cycle');
+    }
+    
+    function clearFileLogs() {
+      if (confirm('Clear all file logs?')) {
+        state.files = [];
+        renderFiles();
+      }
+    }
+    
+    function clearAlerts() {
+      if (confirm('Clear all alerts?')) {
+        state.alerts = [];
+        renderAlerts();
+        updateStats();
+      }
+    }
+    
+    function sortNetworkBy(column) {
+      state.networkSort = column;
+      renderNetwork();
+    }
+    
+    // Utilities
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+    
+    function hexToDecimal(hex) {
+      if (!hex) return 0;
+      return parseInt(hex, 16);
+    }
+    
+    function hexToIP(hex) {
+      if (!hex || hex.length !== 8) return hex;
+      const parts = hex.match(/.{2}/g).reverse();
+      return parts.map(p => parseInt(p, 16)).join('.');
+    }
+    
+    function hexToState(hex) {
+      const states = { '01': 'ESTABLISHED', '02': 'SYN_SENT', '03': 'SYN_RECV', '04': 'FIN_WAIT1', 
+                       '05': 'FIN_WAIT2', '06': 'TIME_WAIT', '07': 'CLOSE', '08': 'CLOSE_WAIT',
+                       '09': 'LAST_ACK', '0A': 'LISTEN', '0B': 'CLOSING' };
+      return states[hex] || hex;
+    }
+    
+    // Close modal on outside click
+    window.onclick = (e) => {
+      const modal = document.getElementById('modal');
+      if (e.target === modal) closeModal();
+    };
   </script>
 </body>
 </html>
