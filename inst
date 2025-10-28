@@ -1,0 +1,28 @@
+ip addr show | grep 'inet ' | grep -v 127.0.0.1
+
+# === EMERGENCY: If VM is frozen ===
+# If the agent froze your system by stopping too many processes,
+# reboot the VM or SSH in and run:
+# sudo pkill -CONT -f edr-agent  # Resume all stopped processes
+# sudo pkill -9 edr-agent         # Kill the agent
+# Then rebuild with the fixed version
+
+# === ON AGENT VM (Ubuntu 24.04) ===
+# First-time setup: Install dependencies
+sudo apt update
+sudo apt install -y pkg-config libssl-dev build-essential rustup
+rustup default stable
+
+# Build the agent (or copy from host)
+cd /home/rubberpirate/redr
+cargo build --release --bin edr-agent
+
+# Run the agent (SIGSTOP detection is now DISABLED by default for safety)
+export EDR_SERVER_URL="http://172.16.0.2:8080"
+export EDR_AGENT_TOKEN="local-dev-token"
+export EDR_WATCH_PATHS="/home,/tmp"
+sudo -E target/release/edr-agent
+
+# === ON HOST/MONITOR ===
+cd /home/rubberpirate/redr
+./target/release/edr-server

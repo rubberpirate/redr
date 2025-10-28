@@ -118,8 +118,9 @@ async fn main() -> Result<()> {
     tokio::spawn(async move {
         loop {
             let mut procs = Vec::new();
-            // detect new pids
-            static SUSPICIOUS: &[&str] = &["nc", "netcat", "ncat", "telnet", "wget", "curl", "sh", "bash", "python", "perl"];
+            // detect new pids - VERY conservative heuristic to avoid freezing the system
+            // Only flag truly suspicious network tools that are rarely used legitimately
+            static SUSPICIOUS: &[&str] = &["nc ", "netcat", "ncat"];
             if let Ok(entries) = fs::read_dir("/proc") {
                 for entry in entries.flatten() {
                     if let Ok(fname) = entry.file_name().into_string() {
@@ -133,17 +134,22 @@ async fn main() -> Result<()> {
                                 "name": comm.trim().to_string(),
                                 "cmd": cmdline.replace('\0', " "),
                             }));
-                            // detect and hold suspicious execs (best-effort)
-                            // we only attempt to SIGSTOP if running as root or have permissions
-                            // use a lightweight heuristic (name or cmd contains suspicious string)
+                            
+                            // DISABLED BY DEFAULT: detect and hold suspicious execs
+                            // Uncomment only for testing specific threats
+                            /*
                             let lower_name = comm.to_lowercase();
                             let lower_cmd = cmdline.to_lowercase();
                             let mut is_susp = false;
+                            
+                            // Only check if command line contains suspicious patterns
+                            // Require EXACT matches to avoid false positives
                             for s in SUSPICIOUS.iter() {
-                                if lower_name.contains(s) || lower_cmd.contains(s) {
+                                if lower_cmd.contains(s) {
                                     is_susp = true; break;
                                 }
                             }
+                            
                             if is_susp {
                                 // consult policy whitelist
                                 let p = policy_p.read().await;
@@ -173,6 +179,7 @@ async fn main() -> Result<()> {
                                     let _ = send_event(&client_p, &server_p, &token_p, &ev).await;
                                 }
                             }
+                            */
                         }
                     }
                 }
