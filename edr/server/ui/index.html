@@ -408,6 +408,10 @@
         }));
         state.domains.set(ev.host, domains);
         renderSites();
+      } else if (ev.event_type === 'malware_detected') {
+        addAlert('danger', `🦠 MALWARE DETECTED on ${ev.host}`, 
+          `File: ${ev.data.path}\nSimilarity: ${ev.data.similarity}%\nAction: ${ev.data.action}`, 
+          null, ev.host);
       } else if (ev.event_type === 'command_result') {
         addAlert('info', `Command executed on ${ev.host}`, JSON.stringify(ev.data, null, 2));
       }

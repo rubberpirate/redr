@@ -16,3 +16,4 @@ anyhow = "1"
 chrono = { version = "0.4", features = ["alloc"] }
 hostname = "0.4"
 dns-lookup = "2.0"
+ssdeep = "0.6"

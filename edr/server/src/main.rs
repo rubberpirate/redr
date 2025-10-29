@@ -47,7 +47,8 @@ async fn main() -> Result<()> {
     let policies = Arc::new(Mutex::new(serde_json::json!({
         "whitelist_commands": [],
         "whitelist_paths": [],
-        "blacklist_hashes": []
+        "blacklist_hashes": [],
+        "malware_fuzzy_hashes": []
     })));
 
     // broadcast channel to push telemetry to websocket clients
@@ -141,6 +142,10 @@ async fn main() -> Result<()> {
                             }
                         } else if t == "hash" {
                             if let Some(arr) = p.get_mut("blacklist_hashes").and_then(|a| a.as_array_mut()) {
+                                arr.push(serde_json::Value::String(val.to_string()));
+                            }
+                        } else if t == "malware" {
+                            if let Some(arr) = p.get_mut("malware_fuzzy_hashes").and_then(|a| a.as_array_mut()) {
                                 arr.push(serde_json::Value::String(val.to_string()));
                             }
                         }

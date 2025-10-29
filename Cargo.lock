@@ -200,6 +200,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "ssdeep",
  "tokio",
 ]
 
@@ -769,6 +770,16 @@ name = "libc"
 version = "0.2.177"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2874a2af47a2325c2001a6e6fad9b16a53b802102b528163885171cf92b15976"
+
+[[package]]
+name = "libfuzzy-sys"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4774eb3c15b9506dbf7571a4c65cee61a80561d44baef4bf1a8700496982834c"
+dependencies = [
+ "cc",
+ "libc",
+]
 
 [[package]]
 name = "libredox"
@@ -1438,6 +1449,16 @@ name = "spin"
 version = "0.9.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6980e8d7511241f8acf4aebddbb1ff938df5eebe98691418c4468d0b72a96a67"
+
+[[package]]
+name = "ssdeep"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bc1029d357aab683016d86af6ba42fb0772ab3ac191c8f6eef5315d4e0988752"
+dependencies = [
+ "libc",
+ "libfuzzy-sys",
+]
 
 [[package]]
 name = "stable_deref_trait"

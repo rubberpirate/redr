@@ -44,6 +44,18 @@ fn sha256_of_path(path: &Path) -> Result<String> {
     Ok(hex::encode(hasher.finalize()))
 }
 
+fn fuzzy_hash_of_path(path: &Path) -> Result<String> {
+    let data = fs::read(path)?;
+    match ssdeep::hash(&data) {
+        Ok(hash) => Ok(hash),
+        Err(_) => Ok(String::new())
+    }
+}
+
+fn compare_fuzzy_hash(hash1: &str, hash2: &str) -> u8 {
+    ssdeep::compare(hash1, hash2).unwrap_or(0)
+}
+
 fn quarantine_file(path: &Path) -> Result<()> {
     let qdir = Path::new("/var/lib/edr/quarantine");
     fs::create_dir_all(qdir)?;
@@ -139,7 +151,8 @@ async fn main() -> Result<()> {
     let policy: Arc<RwLock<serde_json::Value>> = Arc::new(RwLock::new(serde_json::json!({
         "whitelist_commands": [],
         "whitelist_paths": [],
-        "blacklist_hashes": []
+        "blacklist_hashes": [],
+        "malware_fuzzy_hashes": []
     })));
     let held_pids: Arc<Mutex<HashSet<i32>>> = Arc::new(Mutex::new(HashSet::new()));
 
@@ -267,9 +280,15 @@ async fn main() -> Result<()> {
                         if path.is_file() {
                             match sha256_of_path(&path) {
                                 Ok(hash) => {
+                                    let fuzzy_hash = fuzzy_hash_of_path(&path).unwrap_or_default();
+                                    
                                     // check policy blacklist or suspicious paths and quarantine if found
                                     let mut quarantined = false;
+                                    let mut malware_detected = false;
+                                    let mut similarity_score = 0u8;
+                                    
                                     if let Some(p) = policy_f.read().await.clone().as_object().cloned() {
+                                        // Check exact hash match
                                         if let Some(black) = p.get("blacklist_hashes").and_then(|v| v.as_array()) {
                                             for h in black {
                                                 if let Some(s) = h.as_str() {
@@ -281,6 +300,43 @@ async fn main() -> Result<()> {
                                                             quarantined = true;
                                                         }
                                                         break;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        
+                                        // Check fuzzy hash for malware similarity (if not already quarantined)
+                                        if !quarantined && !fuzzy_hash.is_empty() {
+                                            if let Some(malware_sigs) = p.get("malware_fuzzy_hashes").and_then(|v| v.as_array()) {
+                                                for sig in malware_sigs {
+                                                    if let Some(sig_hash) = sig.as_str() {
+                                                        let score = compare_fuzzy_hash(&fuzzy_hash, sig_hash);
+                                                        if score > similarity_score {
+                                                            similarity_score = score;
+                                                        }
+                                                        // Threshold: 75% similarity = malware
+                                                        if score >= 75 {
+                                                            malware_detected = true;
+                                                            if let Err(e) = quarantine_file(&path) {
+                                                                eprintln!("malware quarantine failed: {:?}", e);
+                                                            } else {
+                                                                quarantined = true;
+                                                                // Alert with similarity score
+                                                                let alert_ev = TelemetryEvent {
+                                                                    host: host_f.clone(),
+                                                                    event_type: "malware_detected".into(),
+                                                                    data: serde_json::json!({
+                                                                        "path": path.to_string_lossy(),
+                                                                        "sha256": hash.clone(),
+                                                                        "fuzzy_hash": fuzzy_hash.clone(),
+                                                                        "similarity": score,
+                                                                        "action": "quarantined"
+                                                                    }),
+                                                                };
+                                                                let _ = send_event(&client_f, &server_f, &token_f, &alert_ev).await;
+                                                            }
+                                                            break;
+                                                        }
                                                     }
                                                 }
                                             }
@@ -305,7 +361,9 @@ async fn main() -> Result<()> {
                                         data: serde_json::json!({
                                             "path": path.to_string_lossy(),
                                             "sha256": hash,
+                                            "fuzzy_hash": fuzzy_hash,
                                             "kind": format!("{:?}", event.kind),
+                                            "malware_similarity": if similarity_score > 0 { similarity_score } else { 0 }
                                         }),
                                     };
                                     let _ = send_event(&client_f, &server_f, &token_f, &file_ev).await;
