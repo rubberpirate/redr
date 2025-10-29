@@ -61,14 +61,6 @@
     .network-table td { padding: 10px 12px; border-bottom: 1px solid #ecf0f1; font-size: 12px; }
     .network-table tr:hover { background: #f8f9fa; }
     .port { font-weight: bold; color: #2980b9; }
-    .service-badge { background: #3498db; color: white; padding: 2px 8px; border-radius: 3px; font-size: 10px; margin-left: 8px; }
-    .data-badge { background: #9b59b6; color: white; padding: 2px 8px; border-radius: 3px; font-size: 10px; margin-left: 8px; }
-    .status-active { color: #27ae60; font-weight: bold; }
-    .status-blocked { color: #e74c3c; font-weight: bold; }
-    .btn-unblock { background: #27ae60; }
-    .btn-unblock:hover { background: #229954; }
-    .btn-block { background: #e74c3c; }
-    .btn-block:hover { background: #c0392b; }
     .btn-block-port { padding: 4px 8px; font-size: 10px; }
     
     /* Files */
@@ -109,13 +101,7 @@
     <h1>🛡️ EDR Dashboard</h1>
     <div class="host-filter">
       <input id="search" class="search-box" placeholder="Search processes, IPs, files..."/>
-      <select id="endpoint-filter" onchange="filterEndpoint()" style="padding: 6px 12px; border: none; border-radius: 4px; min-width: 200px; margin-left: 12px;">
-        <option value="">All Endpoints</option>
-      </select>
-      <label style="margin-left: 12px; font-size: 13px;">
-        <input type="checkbox" id="auto-refresh" checked onchange="toggleAutoRefresh()" style="margin-right: 6px; cursor: pointer;" />
-        Auto-refresh
-      </label>
+      <input id="filter" placeholder="Filter by host..."/>
     </div>
   </div>
   
@@ -141,7 +127,6 @@
   <div class="tabs">
     <div class="tab active" data-tab="processes">Processes</div>
     <div class="tab" data-tab="network">Network</div>
-    <div class="tab" data-tab="sites">Sites</div>
     <div class="tab" data-tab="files">Files</div>
     <div class="tab" data-tab="alerts">Alerts</div>
     <div class="tab-spacer"></div>
@@ -168,7 +153,6 @@
           <option value="recent">Sort: Most Recent</option>
           <option value="port">Sort: Port</option>
           <option value="state">Sort: State</option>
-          <option value="data">Sort: Data Usage</option>
         </select>
         <button onclick="refreshData()">🔄 Refresh</button>
       </div>
@@ -184,27 +168,6 @@
         </thead>
         <tbody id="network-list">
           <tr><td colspan="5" style="text-align:center; padding: 40px; color: #95a5a6;">Waiting for network data...</td></tr>
-        </tbody>
-      </table>
-    </div>
-    
-    <div id="sites-panel" class="tab-panel">
-      <div class="toolbar">
-        <input type="text" id="site-search" placeholder="Search sites..." style="flex: 1; padding: 8px 12px; border: 1px solid #ddd; border-radius: 4px;">
-      </div>
-      <table class="network-table">
-        <thead>
-          <tr>
-            <th>Host</th>
-            <th>Domain/Website</th>
-            <th>IP Address</th>
-            <th>Port</th>
-            <th>Status</th>
-            <th>Actions</th>
-          </tr>
-        </thead>
-        <tbody id="sites-list">
-          <tr><td colspan="6" style="text-align:center; padding: 40px; color: #95a5a6;">Waiting for site data...</td></tr>
         </tbody>
       </table>
     </div>
@@ -249,64 +212,14 @@
     // State
     const state = {
       processes: new Map(), // host -> {procs, timestamp}
-      network: new Map(),   // host -> {conns, timestamp, bandwidth}
+      network: new Map(),   // host -> {conns, timestamp}
       files: [],
       alerts: [],
-      domains: new Map(),   // host -> [{domain, ip, port, timestamp, blocked}]
-      blockedPorts: new Set(), // Set of blocked ports
-      blockedDomains: new Set(), // Set of blocked domains
       searchTerm: '',
       processSort: 'recent',
       networkSort: 'recent',
-      fileFilter: 'all',
-      selectedEndpoint: '',
-      autoRefresh: true,
-      endpoints: new Set()
+      fileFilter: 'all'
     };
-    
-    // Port to service mapping
-    const PORT_SERVICES = {
-      20: 'FTP Data', 21: 'FTP', 22: 'SSH', 23: 'Telnet', 25: 'SMTP',
-      53: 'DNS', 80: 'HTTP', 110: 'POP3', 143: 'IMAP', 443: 'HTTPS',
-      465: 'SMTPS', 587: 'SMTP', 993: 'IMAPS', 995: 'POP3S',
-      3306: 'MySQL', 5432: 'PostgreSQL', 6379: 'Redis', 27017: 'MongoDB',
-      3389: 'RDP', 5900: 'VNC', 8080: 'HTTP-Alt', 8443: 'HTTPS-Alt'
-    };
-    
-    function getServiceName(port) {
-      return PORT_SERVICES[port] || 'Unknown';
-    }
-    
-    function formatBytes(bytes) {
-      if (bytes < 1024) return bytes + ' B';
-      if (bytes < 1024*1024) return (bytes/1024).toFixed(1) + ' KB';
-      return (bytes/(1024*1024)).toFixed(2) + ' MB';
-    }
-    
-    // Endpoint filter
-    function filterEndpoint() {
-      state.selectedEndpoint = document.getElementById('endpoint-filter').value;
-      renderAll();
-    }
-    
-    // Auto-refresh toggle
-    function toggleAutoRefresh() {
-      state.autoRefresh = document.getElementById('auto-refresh').checked;
-    }
-    
-    // Update endpoint dropdown
-    function updateEndpointDropdown() {
-      const select = document.getElementById('endpoint-filter');
-      const current = select.value;
-      select.innerHTML = '<option value="">All Endpoints</option>';
-      Array.from(state.endpoints).sort().forEach(host => {
-        const opt = document.createElement('option');
-        opt.value = host;
-        opt.textContent = host;
-        if (host === current) opt.selected = true;
-        select.appendChild(opt);
-      });
-    }
     
     // Tab switching
     document.querySelectorAll('.tab').forEach(tab => {
@@ -339,27 +252,19 @@
       renderFiles();
     });
     
-    document.getElementById('site-search').addEventListener('input', (e) => {
-      renderSites();
-    });
-    
     // Websocket
     const scheme = (location.protocol === 'https:') ? 'wss' : 'ws';
     const ws = new WebSocket(`${scheme}://${location.host}/ws`);
     ws.onmessage = (m) => {
       try {
         const ev = JSON.parse(m.data);
-        if (state.autoRefresh) {
-          handleEvent(ev);
-        }
+        handleEvent(ev);
       } catch (e) { console.error(e); }
     };
     
     function handleEvent(ev) {
-      state.endpoints.add(ev.host);
-      updateEndpointDropdown();
-      
-      if (state.selectedEndpoint && ev.host !== state.selectedEndpoint) return;
+      const filter = document.getElementById('filter').value.trim();
+      if (filter && !ev.host.includes(filter)) return;
       
       if (ev.event_type === 'process_snapshot') {
         state.processes.set(ev.host, { procs: ev.data.processes || [], timestamp: Date.now() });
@@ -367,30 +272,7 @@
         updateStats();
         checkForThreats(ev);
       } else if (ev.event_type === 'net_snapshot') {
-        const existing = state.network.get(ev.host) || { bandwidth: {} };
-        const conns = (ev.data.lines || []).map((line, idx) => {
-          const parts = line.trim().split(/\s+/);
-          if (parts.length < 4) return null;
-          const localHex = parts[1] || '';
-          const remoteHex = parts[2] || '';
-          const connState = parts[3] || '';
-          const [localAddr, localPort] = parseAddress(localHex);
-          const [remoteAddr, remotePort] = parseAddress(remoteHex);
-          return { localAddr, localPort, remoteAddr, remotePort, state: connState, id: idx };
-        }).filter(c => c && c.localPort);
-        
-        // Track bandwidth (simulated)
-        conns.forEach(conn => {
-          const key = `${conn.localAddr}:${conn.localPort}-${conn.remoteAddr}:${conn.remotePort}`;
-          if (!existing.bandwidth[key]) {
-            existing.bandwidth[key] = { bytes: Math.floor(Math.random() * 1000000), count: 1 };
-          } else {
-            existing.bandwidth[key].bytes += Math.floor(Math.random() * 10000);
-            existing.bandwidth[key].count++;
-          }
-        });
-        
-        state.network.set(ev.host, { conns, timestamp: Date.now(), bandwidth: existing.bandwidth });
+        state.network.set(ev.host, { conns: ev.data.lines || [], timestamp: Date.now() });
         renderNetwork();
         updateStats();
       } else if (ev.event_type === 'file_event') {
@@ -399,15 +281,6 @@
         if (state.files.length > 200) state.files.pop();
         renderFiles();
         checkFileThreats(fileEvent);
-      } else if (ev.event_type === 'domains_detected') {
-        const domains = (ev.data.domains || []).map(d => ({
-          ...d,
-          host: ev.host,
-          timestamp: Date.now(),
-          blocked: state.blockedDomains.has(d.domain)
-        }));
-        state.domains.set(ev.host, domains);
-        renderSites();
       } else if (ev.event_type === 'command_result') {
         addAlert('info', `Command executed on ${ev.host}`, JSON.stringify(ev.data, null, 2));
       }
@@ -430,53 +303,31 @@
       }
     }
     
-    function addAlert(type, title, desc, pid, host) {
-      state.alerts.unshift({ type, title, desc, time: new Date(), pid, host });
+    function addAlert(type, title, desc) {
+      state.alerts.unshift({ type, title, desc, time: new Date() });
       if (state.alerts.length > 50) state.alerts.pop();
       renderAlerts();
       updateStats();
     }
     
-    function parseAddress(hex) {
-      if (!hex || !hex.includes(':')) return ['', ''];
-      const [addrHex, portHex] = hex.split(':');
-      const port = parseInt(portHex, 16);
-      const addr = addrHex.match(/.{2}/g)?.reverse().map(h => parseInt(h, 16)).join('.') || '';
-      return [addr, port];
-    }
-    
     function renderAll() {
       renderProcesses();
       renderNetwork();
-      renderSites();
       renderFiles();
-      renderAlerts();
       updateStats();
     }
     
     function updateStats() {
-      document.getElementById('stat-hosts').textContent = state.endpoints.size;
-      
+      document.getElementById('stat-hosts').textContent = state.processes.size;
       let totalProcs = 0;
-      for (const [host, data] of state.processes) {
-        if (!state.selectedEndpoint || host === state.selectedEndpoint) {
-          totalProcs += data.procs.length;
-        }
-      }
+      state.processes.forEach(h => totalProcs += h.procs.length);
       document.getElementById('stat-processes').textContent = totalProcs;
       
       let totalConns = 0;
-      for (const [host, data] of state.network) {
-        if (!state.selectedEndpoint || host === state.selectedEndpoint) {
-          totalConns += data.conns.length;
-        }
-      }
+      state.network.forEach(h => totalConns += h.conns.length);
       document.getElementById('stat-connections').textContent = totalConns;
       
-      const filteredAlerts = state.selectedEndpoint 
-        ? state.alerts.filter(a => a.host === state.selectedEndpoint).length 
-        : state.alerts.length;
-      document.getElementById('stat-alerts').textContent = filteredAlerts;
+      document.getElementById('stat-alerts').textContent = state.alerts.length;
     }
     
     function renderProcesses() {
@@ -484,12 +335,11 @@
       container.innerHTML = '';
       
       let allProcs = [];
-      for (const [host, hostData] of state.processes) {
-        if (state.selectedEndpoint && host !== state.selectedEndpoint) continue;
+      state.processes.forEach((hostData, host) => {
         hostData.procs.forEach(proc => {
           allProcs.push({ ...proc, host, timestamp: hostData.timestamp });
         });
-      }
+      });
       
       // Filter by search
       if (state.searchTerm) {
@@ -540,36 +390,38 @@
       tbody.innerHTML = '';
       
       let allConns = [];
-      for (const [host, hostData] of state.network) {
-        if (state.selectedEndpoint && host !== state.selectedEndpoint) continue;
-        hostData.conns.forEach(conn => {
-          const key = `${conn.localAddr}:${conn.localPort}-${conn.remoteAddr}:${conn.remotePort}`;
-          const bw = hostData.bandwidth[key] || { bytes: 0, count: 0 };
+      state.network.forEach((hostData, host) => {
+        hostData.conns.forEach(line => {
+          const parts = line.trim().split(/\s+/);
+          if (parts.length < 4) return;
+          
+          const localAddr = parts[1] || '';
+          const remoteAddr = parts[2] || '';
+          const stateVal = parts[3] || '';
+          
+          const localPort = localAddr.split(':')[1];
+          const remoteIp = remoteAddr.split(':')[0];
+          const remotePort = remoteAddr.split(':')[1];
+          
           allConns.push({
             host,
-            localAddr: conn.localAddr,
-            localPort: conn.localPort,
-            remoteAddr: conn.remoteAddr,
-            remotePort: conn.remotePort,
-            state: conn.state,
+            localPort: hexToDecimal(localPort),
+            remoteIp: hexToIP(remoteIp),
+            remotePort: hexToDecimal(remotePort),
+            state: hexToState(stateVal),
             timestamp: hostData.timestamp,
-            bytes: bw.bytes,
-            isBlocked: state.blockedPorts.has(conn.localPort)
+            raw: line
           });
         });
-      }
+      });
       
       // Filter by search
       if (state.searchTerm) {
         allConns = allConns.filter(c => 
           c.host.toLowerCase().includes(state.searchTerm) ||
-          c.localAddr.includes(state.searchTerm) ||
-          c.remoteAddr.includes(state.searchTerm) ||
           c.localPort.toString().includes(state.searchTerm) ||
-          c.remotePort.toString().includes(state.searchTerm) ||
-          c.state.toLowerCase().includes(state.searchTerm) ||
-          getServiceName(c.localPort).toLowerCase().includes(state.searchTerm) ||
-          getServiceName(c.remotePort).toLowerCase().includes(state.searchTerm)
+          c.remoteIp.includes(state.searchTerm) ||
+          c.state.toLowerCase().includes(state.searchTerm)
         );
       }
       
@@ -578,83 +430,23 @@
         allConns.sort((a, b) => b.timestamp - a.timestamp);
       } else if (state.networkSort === 'port') {
         allConns.sort((a, b) => a.localPort - b.localPort);
-      } else if (state.networkSort === 'data') {
-        allConns.sort((a, b) => b.bytes - a.bytes);
       } else if (state.networkSort === 'state') {
         allConns.sort((a, b) => a.state.localeCompare(b.state));
       }
       
       if (allConns.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="7" style="text-align:center; padding: 40px; color: #95a5a6;">No network connections</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; padding: 40px; color: #95a5a6;">No network connections</td></tr>';
         return;
       }
       
       allConns.forEach(conn => {
-        const localService = getServiceName(conn.localPort);
-        const remoteService = getServiceName(conn.remotePort);
-        const service = localService !== 'Unknown' ? localService : remoteService;
-        
         const row = document.createElement('tr');
         row.innerHTML = `
-          <td><span class="host-badge">${escapeHtml(conn.host)}</span></td>
-          <td><span class="port">${conn.localAddr}:${conn.localPort}</span></td>
-          <td><span class="port">${conn.remoteAddr}:${conn.remotePort}</span></td>
+          <td>${escapeHtml(conn.host)}</td>
+          <td><span class="port">${conn.localPort}</span></td>
+          <td>${conn.remoteIp}:${conn.remotePort}</td>
           <td>${conn.state}</td>
-          <td><span class="service-badge">${service}</span></td>
-          <td><span class="data-badge">${formatBytes(conn.bytes)}</span></td>
-          <td>${conn.isBlocked 
-            ? `<button class="btn btn-unblock" onclick="unblockPort('${escapeHtml(conn.host)}', ${conn.localPort})">Unblock</button>`
-            : `<button class="btn btn-block" onclick="blockPort('${escapeHtml(conn.host)}', ${conn.localPort})">Block Port</button>`
-          }</td>
-        `;
-        tbody.appendChild(row);
-      });
-    }
-    
-    function renderSites() {
-      const tbody = document.getElementById('sites-list');
-      tbody.innerHTML = '';
-      
-      let allSites = [];
-      for (const [host, domains] of state.domains) {
-        if (!state.selectedEndpoint || host === state.selectedEndpoint) {
-          domains.forEach(d => allSites.push({ ...d, host }));
-        }
-      }
-      
-      // Apply search filter
-      const searchTerm = document.getElementById('site-search')?.value.toLowerCase() || '';
-      if (searchTerm) {
-        allSites = allSites.filter(s => 
-          s.domain.toLowerCase().includes(searchTerm) || 
-          s.ip.toLowerCase().includes(searchTerm)
-        );
-      }
-      
-      if (allSites.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; padding: 40px; color: #95a5a6;">No sites detected</td></tr>';
-        return;
-      }
-      
-      // Sort by most recent
-      allSites.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-      
-      allSites.forEach(site => {
-        const row = document.createElement('tr');
-        const blocked = state.blockedDomains.has(site.domain);
-        const statusClass = blocked ? 'status-blocked' : 'status-active';
-        const statusText = blocked ? '🚫 Blocked' : '✓ Active';
-        const actionBtn = blocked 
-          ? `<button class="btn btn-unblock" onclick="unblockDomain('${escapeHtml(site.host)}', '${escapeHtml(site.domain)}')">Unblock</button>`
-          : `<button class="btn btn-block" onclick="blockDomain('${escapeHtml(site.host)}', '${escapeHtml(site.domain)}')">Block Site</button>`;
-        
-        row.innerHTML = `
-          <td>${escapeHtml(site.host)}</td>
-          <td><strong>${escapeHtml(site.domain)}</strong></td>
-          <td>${escapeHtml(site.ip)}</td>
-          <td>${site.port}</td>
-          <td><span class="${statusClass}">${statusText}</span></td>
-          <td>${actionBtn}</td>
+          <td><button class="btn btn-block btn-block-port" onclick="blockPort('${escapeHtml(conn.host)}', ${conn.localPort})">Block Port</button></td>
         `;
         tbody.appendChild(row);
       });
@@ -664,10 +456,7 @@
       const container = document.getElementById('file-list');
       container.innerHTML = '';
       
-      let filteredFiles = state.files.filter(f => {
-        if (state.selectedEndpoint && f.host !== state.selectedEndpoint) return false;
-        return true;
-      });
+      let filteredFiles = state.files;
       
       // Filter by type
       if (state.fileFilter !== 'all') {
@@ -675,7 +464,6 @@
           let eventType = 'modify';
           if (f.kind && f.kind.includes('Create')) eventType = 'create';
           if (f.kind && f.kind.includes('Remove')) eventType = 'delete';
-          if (f.type === 'file_quarantined') eventType = 'quarantined';
           return eventType === state.fileFilter;
         });
       }
@@ -716,18 +504,12 @@
       const container = document.getElementById('alert-list');
       container.innerHTML = '';
       
-      // Filter by endpoint
-      let filteredAlerts = state.alerts;
-      if (state.selectedEndpoint) {
-        filteredAlerts = state.alerts.filter(a => a.host === state.selectedEndpoint);
-      }
-      
-      if (filteredAlerts.length === 0) {
+      if (state.alerts.length === 0) {
         container.innerHTML = '<div class="empty-state">No alerts detected</div>';
         return;
       }
       
-      filteredAlerts.forEach(alert => {
+      state.alerts.forEach(alert => {
         const card = document.createElement('div');
         card.className = `alert-card ${alert.type}`;
         const safeBtn = `<button onclick='markSafe(${JSON.stringify(alert)})' class="btn">Mark Safe</button>`;
@@ -794,30 +576,9 @@
     
     function blockPort(host, port) {
       if (!confirm(`Block port ${port} on ${host}?`)) return;
-      state.blockedPorts.add(port);
-      sendCommand(host, 'block_port', { port: port });
-      renderNetwork();
-    }
-    
-    function unblockPort(host, port) {
-      if (!confirm(`Unblock port ${port} on ${host}?`)) return;
-      state.blockedPorts.delete(port);
-      sendCommand(host, 'unblock_port', { port: port });
-      renderNetwork();
-    }
-    
-    function blockDomain(host, domain) {
-      if (!confirm(`Block access to ${domain} on ${host}?\n\nThis will add the domain to /etc/hosts to prevent access.`)) return;
-      state.blockedDomains.add(domain);
-      sendCommand(host, 'block_domain', { domain: domain });
-      renderSites();
-    }
-    
-    function unblockDomain(host, domain) {
-      if (!confirm(`Unblock access to ${domain} on ${host}?`)) return;
-      state.blockedDomains.delete(domain);
-      sendCommand(host, 'unblock_domain', { domain: domain });
-      renderSites();
+      // This would need backend support - for now just alert
+      addAlert('info', 'Port block requested', `Port ${port} on ${host} - requires firewall rules`);
+      // In a real system: sendCommand(host, 'block_port', { port: port });
     }
     
     function sendCommand(host, action, args) {

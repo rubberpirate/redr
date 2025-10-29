@@ -89,6 +89,42 @@ fn block_port(port: u16) -> Result<()> {
     Ok(())
 }
 
+fn unblock_port(port: u16) -> Result<()> {
+    // Remove the drop rule for this port - this is simplified; in production you'd track rule handles
+    let rule = format!("delete rule inet filter input tcp dport {} drop", port);
+    let _ = Command::new("nft").arg("-f").arg("-").stdin(std::process::Stdio::piped()).spawn().and_then(|mut child| {
+        use std::io::Write;
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin.write_all(rule.as_bytes())?;
+        }
+        child.wait()?;
+        Ok(())
+    });
+    Ok(())
+}
+
+fn block_domain(domain: &str) -> Result<()> {
+    // Block by adding to /etc/hosts to redirect to 0.0.0.0
+    use std::io::Write;
+    let entry = format!("0.0.0.0 {}\n", domain);
+    if let Ok(mut file) = fs::OpenOptions::new().append(true).open("/etc/hosts") {
+        let _ = file.write_all(entry.as_bytes());
+    }
+    Ok(())
+}
+
+fn unblock_domain(domain: &str) -> Result<()> {
+    // Remove from /etc/hosts
+    if let Ok(contents) = fs::read_to_string("/etc/hosts") {
+        let filtered: Vec<_> = contents
+            .lines()
+            .filter(|line| !line.contains(domain) || !line.starts_with("0.0.0.0"))
+            .collect();
+        let _ = fs::write("/etc/hosts", filtered.join("\n"));
+    }
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Config from environment
@@ -306,21 +342,75 @@ async fn main() -> Result<()> {
         }
     });
 
-    // Network snapshot loop (simple parse /proc/net/tcp)
+    // Network snapshot loop (simple parse /proc/net/tcp) with domain detection
     let client_n = client.clone();
     let server_n = server.clone();
     let token_n = token.clone();
     let host_n = host.clone();
     tokio::spawn(async move {
+        use std::net::{IpAddr, SocketAddr};
+        use std::str::FromStr;
+        
         loop {
+            let mut domains = Vec::new();
+            
             if let Ok(tcp) = fs::read_to_string("/proc/net/tcp") {
                 let lines: Vec<_> = tcp.lines().skip(1).map(|l| l.to_string()).collect();
+                
+                // Parse IPs and attempt reverse DNS lookup
+                for line in &lines {
+                    let parts: Vec<&str> = line.split_whitespace().collect();
+                    if parts.len() > 2 {
+                        let remote_addr = parts[2];
+                        if let Some((ip_hex, port_hex)) = remote_addr.split_once(':') {
+                            // Convert hex IP to decimal
+                            if let Ok(ip_num) = u32::from_str_radix(ip_hex, 16) {
+                                let ip = format!("{}.{}.{}.{}", 
+                                    ip_num & 0xFF, 
+                                    (ip_num >> 8) & 0xFF, 
+                                    (ip_num >> 16) & 0xFF, 
+                                    (ip_num >> 24) & 0xFF
+                                );
+                                
+                                // Skip localhost and private IPs
+                                if !ip.starts_with("127.") && !ip.starts_with("0.") && !ip.starts_with("192.168.") && !ip.starts_with("10.") {
+                                    // Attempt reverse DNS lookup
+                                    if let Ok(addr) = IpAddr::from_str(&ip) {
+                                        if let Ok(names) = tokio::task::spawn_blocking(move || {
+                                            dns_lookup::lookup_addr(&addr)
+                                        }).await {
+                                            if let Ok(hostname) = names {
+                                                let port_num = u16::from_str_radix(port_hex, 16).unwrap_or(0);
+                                                domains.push(serde_json::json!({
+                                                    "ip": ip,
+                                                    "domain": hostname,
+                                                    "port": port_num
+                                                }));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                
                 let ev = TelemetryEvent {
                     host: host_n.clone(),
                     event_type: "net_snapshot".into(),
                     data: serde_json::json!({"lines": lines}),
                 };
                 let _ = send_event(&client_n, &server_n, &token_n, &ev).await;
+                
+                // Send domains as separate event
+                if !domains.is_empty() {
+                    let domain_ev = TelemetryEvent {
+                        host: host_n.clone(),
+                        event_type: "domains_detected".into(),
+                        data: serde_json::json!({"domains": domains}),
+                    };
+                    let _ = send_event(&client_n, &server_n, &token_n, &domain_ev).await;
+                }
             }
             sleep(Duration::from_secs(5)).await;
         }
@@ -362,6 +452,21 @@ async fn main() -> Result<()> {
                                     if let Some(portv) = c.get("args").and_then(|a| a.get("port")).and_then(|p| p.as_u64()) {
                                         let _ = block_port(portv as u16);
                                         result = serde_json::json!({"id": id, "status": "blocked_port", "port": portv});
+                                    }
+                                } else if action == "unblock_port" {
+                                    if let Some(portv) = c.get("args").and_then(|a| a.get("port")).and_then(|p| p.as_u64()) {
+                                        let _ = unblock_port(portv as u16);
+                                        result = serde_json::json!({"id": id, "status": "unblocked_port", "port": portv});
+                                    }
+                                } else if action == "block_domain" {
+                                    if let Some(domain) = c.get("args").and_then(|a| a.get("domain")).and_then(|d| d.as_str()) {
+                                        let _ = block_domain(domain);
+                                        result = serde_json::json!({"id": id, "status": "blocked_domain", "domain": domain});
+                                    }
+                                } else if action == "unblock_domain" {
+                                    if let Some(domain) = c.get("args").and_then(|a| a.get("domain")).and_then(|d| d.as_str()) {
+                                        let _ = unblock_domain(domain);
+                                        result = serde_json::json!({"id": id, "status": "unblocked_domain", "domain": domain});
                                     }
                                 } else if action == "resume" {
                                     if let Some(pidv) = c.get("args").and_then(|a| a.get("pid")).and_then(|p| p.as_i64()) {
